@@ -17,8 +17,8 @@ st.set_page_config(
 st.title("Wearable Data and Machine Learning for Early Detection of Sleep Disorders")
 
 st.write(
-    "This app trains a machine learning model at runtime using wearable-simulated sleep data. "
-    "It does not require a saved .pkl model file."
+    "This app trains a machine learning model at runtime using uploaded wearable-simulated sleep data. "
+    "No saved .pkl model file is required."
 )
 
 st.sidebar.header("Upload Data")
@@ -34,6 +34,10 @@ if uploaded_file is not None:
     st.subheader("Dataset Preview")
     st.dataframe(data.head())
 
+    st.subheader("Dataset Information")
+    st.write(f"Rows: {data.shape[0]}")
+    st.write(f"Columns: {data.shape[1]}")
+
     st.subheader("Dataset Summary")
     st.write(data.describe(include="all"))
 
@@ -46,7 +50,6 @@ if uploaded_file is not None:
 
     if target_column:
         df = data.copy()
-
         df = df.dropna()
 
         X = df.drop(columns=[target_column])
@@ -59,7 +62,34 @@ if uploaded_file is not None:
 
         # Encode target column if needed
         if y.dtype == "object":
-            y = LabelEncoder().fit_transform(y.astype(str))
+            label_encoder = LabelEncoder()
+            y = label_encoder.fit_transform(y.astype(str))
+            class_names = label_encoder.classes_
+        else:
+            class_names = np.unique(y)
+
+        class_counts = pd.Series(y).value_counts()
+
+        st.subheader("Target Class Distribution")
+        class_distribution = pd.DataFrame({
+            "Class": class_counts.index,
+            "Count": class_counts.values
+        })
+        st.dataframe(class_distribution)
+
+        if len(df) < 5:
+            st.error(
+                "The uploaded dataset is too small to train a model. "
+                "Please upload a larger processed CSV file with feature columns and a target column."
+            )
+            st.stop()
+
+        if len(class_counts) < 2:
+            st.error(
+                "The selected target column only has one class. "
+                "Please choose a target column with at least two classes."
+            )
+            st.stop()
 
         test_size = st.sidebar.slider(
             "Test size",
@@ -77,13 +107,30 @@ if uploaded_file is not None:
             step=50
         )
 
-        X_train, X_test, y_train, y_test = train_test_split(
-            X,
-            y,
-            test_size=test_size,
-            random_state=42,
-            stratify=y if len(np.unique(y)) > 1 else None
-        )
+        # Only use stratify if every class has at least 2 examples
+        if len(class_counts) > 1 and class_counts.min() >= 2:
+            stratify_option = y
+        else:
+            stratify_option = None
+            st.warning(
+                "Stratified splitting was turned off because one or more classes has fewer than 2 samples."
+            )
+
+        try:
+            X_train, X_test, y_train, y_test = train_test_split(
+                X,
+                y,
+                test_size=test_size,
+                random_state=42,
+                stratify=stratify_option
+            )
+        except ValueError as e:
+            st.error(
+                "The dataset could not be split into training and testing sets. "
+                "Please upload a larger CSV file with more examples for each sleep stage."
+            )
+            st.write("Technical detail:", e)
+            st.stop()
 
         model = RandomForestClassifier(
             n_estimators=n_estimators,
@@ -92,11 +139,10 @@ if uploaded_file is not None:
         )
 
         model.fit(X_train, y_train)
-
         y_pred = model.predict(X_test)
 
         accuracy = accuracy_score(y_test, y_pred)
-        f1 = f1_score(y_test, y_pred, average="weighted")
+        f1 = f1_score(y_test, y_pred, average="weighted", zero_division=0)
 
         st.subheader("Model Performance")
 
@@ -109,7 +155,12 @@ if uploaded_file is not None:
             st.metric("Weighted F1 Score", f"{f1:.3f}")
 
         st.subheader("Classification Report")
-        report = classification_report(y_test, y_pred, output_dict=True)
+        report = classification_report(
+            y_test,
+            y_pred,
+            output_dict=True,
+            zero_division=0
+        )
         st.dataframe(pd.DataFrame(report).transpose())
 
         st.subheader("Confusion Matrix")
